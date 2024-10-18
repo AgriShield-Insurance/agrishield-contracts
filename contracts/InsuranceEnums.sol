@@ -5,6 +5,7 @@ contract InsuranceEnums {
     enum InsuranceType {
         SNOWFALL,
         DROUGHT,
-        RAINY
+        RAINY,
+        NONE
     }
 }

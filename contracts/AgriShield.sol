@@ -6,6 +6,7 @@ import "hardhat/console.sol";
 import "./AgriShieldNFT.sol";
 import "./InsuranceEnums.sol";
 import "./InsuranceStructs.sol";
+import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 
 contract AgriShield {
     address dataFeedStore;
@@ -18,33 +19,75 @@ contract AgriShield {
 
     function mint(uint256 startDate, uint256 endDate, InsuranceEnums.InsuranceType insuranceType) external payable {
         require(endDate > startDate, "endDate should be after startDate");
-        uint256 numberOfDays = (endDate - startDate) / 1 days;
-        uint256 requiredPayment = numberOfDays * 0.01 ether;
+        uint256 requiredPayment = getRequiredPayment(startDate, endDate);
         require(msg.value >= requiredPayment, "Insufficient ETH sent for the specified duration");
         // generate prepopulated traits for nft based on type
-        nft.mint(msg.sender, InsuranceStructs.InsurancePolicy(insuranceType, 0, 0, 0, 0));
+        nft.mint(msg.sender, InsuranceStructs.InsurancePolicy(insuranceType, 0, 0, startDate, endDate));
+    }
+
+    function getRequiredPayment(uint256 startDate, uint256 endDate) public pure returns (uint256) {
+        require(endDate > startDate, "endDate should be after startDate");
+        uint256 numberOfDays = (endDate - startDate) / 1 days;
+        return numberOfDays * 0.01 ether;
     }
 
     function claim(uint256 tokenId) external {
         require(nft.ownerOf(tokenId) == msg.sender, "not the owner of this token");
+        
+        // Retrieve the insurance policy associated with the tokenId
+        InsuranceStructs.InsurancePolicy memory policy = nft.insurancePolicies(tokenId);
+        
+        require(
+            policy.insuranceType != InsuranceEnums.InsuranceType.NONE, "no insurance policy for this token"
+        );
+        require(policy.endDate > block.timestamp, "endDate has not passed");
+
+        // Ensure the current time is within the policy period
+        require(block.timestamp >= policy.startDate, "Policy has not started yet");
+        require(block.timestamp <= policy.endDate, "Policy has expired");
+        
         bool shouldBePaidOut = false;
-        // based on the type, decide what oracle price feed with be queried
-        // check if under nft.details.precipitation for drought
-        // check if above nft.details.precipitation for rainfall
-        // check if above nft.details.snowfall for snowfall
-        // create mapping of roundIds to {timestamp, price}
-        // start looping from latestRound() in dataFeedStore
-        // lower the roundId that you pass to getRoundData(uint80 _roundId)
-        // with the returned round data check if the timestamp is before the token startDate or after endDate.
-        // if not -> add it to the roundIds
-        // now do the sum of all precipitations or snowfall, based on the type
-        if (shouldBePaidOut) {
-            // get start and endDate from insurancePolicy
-            // uint256 numberOfDays = (endDate - startDate) / 1 days;
-            // uint256 requiredPayment = numberOfDays * 0.01 ether;
-            // (bool success,) = msg.sender.call{value: requiredPayment * 100}();
-            // require(success, "failed to transfer ETH to claimer");
+        uint256 totalPrecipitation = 0;
+        uint256 totalSnowfall = 0;
+        
+        // Determine which type of insurance to evaluate
+        if (policy.insuranceType == InsuranceEnums.InsuranceType.DROUGHT) {
+            // Fetch precipitation data from the oracle
+            totalPrecipitation = getPrecipitationData(policy.startDate, policy.endDate);
+            
+            // Check if precipitation is below a certain threshold for drought
+            if (totalPrecipitation < policy.precipitation) { // Example threshold
+                shouldBePaidOut = true;
+            }
+        } else if (policy.insuranceType == InsuranceEnums.InsuranceType.RAINY) {
+            // Fetch precipitation data from the oracle
+            totalPrecipitation = getPrecipitationData(policy.startDate, policy.endDate);
+            
+            // Check if precipitation is above a certain threshold for rainfall
+            if (totalPrecipitation > policy.precipitation) { // Example threshold
+                shouldBePaidOut = true;
+            }
+        } else if (policy.insuranceType == InsuranceEnums.InsuranceType.SNOWFALL) {
+            // Fetch snowfall data from the oracle
+            totalSnowfall = getSnowfallData(policy.startDate, policy.endDate);
+            
+            // Check if snowfall is above a certain threshold for snowfall
+            if (totalSnowfall > policy.snowfall) { // Example threshold
+                shouldBePaidOut = true;
+            }
         }
+
+        if (shouldBePaidOut) {
+            // Calculate the payout amount (e.g., 100 times the required payment)
+            uint256 payoutAmount = getRequiredPayment(policy.startDate, policy.endDate) * 100;
+            require(address(this).balance >= payoutAmount, "Insufficient contract balance for payout");
+            
+            // Transfer the payout to the claimer
+            (bool success, ) = msg.sender.call{value: payoutAmount}("");
+            require(success, "Failed to transfer ETH to claimer");
+        }
+
+        // Burn the NFT as the claim has been processed
         nft.burn(tokenId);
     }
 
@@ -57,5 +100,85 @@ contract AgriShield {
         (bool success, bytes memory res) = dataFeedStore.call(abi.encodeWithSignature("latestAnswer()"));
         require(success, "not successful call");
         return abi.decode(res, (uint256));
+    }
+
+    /**
+     * @dev Fetches precipitation data from the oracle for the given date range.
+     * Implements early termination if the round timestamp is after endDate.
+     * Utilizes binary search for efficient data retrieval in large date ranges.
+     * @param startDate The start date of the policy period.
+     * @param endDate The end date of the policy period.
+     * @return totalPrecipitation The total precipitation over the period.
+     */
+    function getPrecipitationData(uint256 startDate, uint256 endDate) internal view returns (uint256 totalPrecipitation) {
+        uint80 latestRound = getLatestRound();
+        uint80 firstRelevantRound = findFirstRound(startDate, latestRound);
+        
+        for (uint80 roundId = firstRelevantRound; roundId > 0; roundId--) {
+            (, int256 answer, , uint256 timestamp, ) = AggregatorV3Interface(dataFeedStore).getRoundData(roundId);
+            
+            if (timestamp > endDate) {
+                // Skip rounds after the endDate
+                continue;
+            }
+            
+            if (timestamp < startDate) {
+                // No more relevant data
+                break;
+            }
+            
+            totalPrecipitation += uint256(answer);
+        }
+    }
+
+    /**
+     * @dev Performs a binary search to find the first round ID that is on or after the startDate.
+     * @param startDate The start date of the policy period.
+     * @param latestRound The latest round ID available from the oracle.
+     * @return firstRound The first round ID that meets the criteria.
+     */
+    function findFirstRound(uint256 startDate, uint80 latestRound) internal view returns (uint80 firstRound) {
+        uint80 low = 1;
+        uint80 high = latestRound;
+        firstRound = latestRound;
+
+        while (low <= high) {
+            uint80 mid = low + (high - low) / 2;
+            (, , , uint256 timestamp, ) = AggregatorV3Interface(dataFeedStore).getRoundData(mid);
+            
+            if (timestamp < startDate) {
+                low = mid + 1;
+            } else {
+                firstRound = mid;
+                high = mid - 1;
+            }
+        }
+    }
+
+    /**
+     * @dev Fetches snowfall data from the oracle for the given date range.
+     * @param startDate The start date of the policy period.
+     * @param endDate The end date of the policy period.
+     * @return totalSnowfall The total snowfall over the period.
+     */
+    function getSnowfallData(uint256 startDate, uint256 endDate) internal view returns (uint256 totalSnowfall) {
+        // Example implementation: Replace with actual oracle data fetching logic
+        // This could involve looping through each day in the range and summing the snowfall
+        uint80 latestRound = getLatestRound();
+        for (uint80 roundId = latestRound; roundId > 0; roundId--) {
+            (uint80 id, int256 answer, , uint256 timestamp, ) = AggregatorV3Interface(dataFeedStore).getRoundData(roundId);
+            if (timestamp < startDate) {
+                break;
+            }
+            totalSnowfall += uint256(answer);
+        }
+    }
+
+    /**
+     * @dev Retrieves the latest round ID from the oracle.
+     * @return latestRound The latest round ID.
+     */
+    function getLatestRound() internal view returns (uint80 latestRound) {
+        latestRound = AggregatorV3Interface(dataFeedStore).latestRound();
     }
 }

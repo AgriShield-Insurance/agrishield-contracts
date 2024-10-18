@@ -3,9 +3,9 @@ pragma solidity ^0.8.27;
 
 contract InsuranceEnums {
     enum InsuranceType {
+        NONE,
         SNOWFALL,
         DROUGHT,
-        RAINY,
-        NONE
+        RAINY
     }
 }

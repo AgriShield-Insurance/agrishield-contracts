@@ -9,11 +9,13 @@ import "./InsuranceStructs.sol";
 import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV2V3Interface.sol";
 
 contract AgriShield {
-    address dataFeedStore;
+    address dataFeedStorePrecipitation;
+    address dataFeedStoreSnowfall;
     AgriShieldNFT public nft;
 
-    constructor(address _dataFeedStore) {
-        dataFeedStore = _dataFeedStore;
+    constructor(address _dataFeedStorePrecipitation, address _dataFeedStoreSnowfall) {
+        dataFeedStorePrecipitation = _dataFeedStorePrecipitation;
+        dataFeedStoreSnowfall = _dataFeedStoreSnowfall;
         nft = new AgriShieldNFT();
     }
 
@@ -94,13 +96,6 @@ contract AgriShield {
         return address(nft);
     }
 
-    // Key is `31` for precipitation values
-    function getDataById() internal returns (uint256) {
-        (bool success, bytes memory res) = dataFeedStore.call(abi.encodeWithSignature("latestAnswer()"));
-        require(success, "not successful call");
-        return abi.decode(res, (uint256));
-    }
-
     /**
      * @dev Fetches precipitation data from the oracle for the given date range.
      * Implements early termination if the round timestamp is after endDate.
@@ -114,11 +109,11 @@ contract AgriShield {
         view
         returns (uint256 totalPrecipitation)
     {
-        uint80 latestRound = getLatestRound();
+        uint80 latestRound = getLatestRound(dataFeedStorePrecipitation);
         uint80 firstRelevantRound = findFirstRound(startDate, latestRound);
 
         for (uint80 roundId = firstRelevantRound; roundId > 0; roundId--) {
-            (, int256 answer,, uint256 timestamp,) = AggregatorV2V3Interface(dataFeedStore).getRoundData(roundId);
+            (, int256 answer,, uint256 timestamp,) = AggregatorV2V3Interface(dataFeedStorePrecipitation).getRoundData(roundId);
 
             if (timestamp > endDate) {
                 // Skip rounds after the endDate
@@ -147,7 +142,7 @@ contract AgriShield {
 
         while (low <= high) {
             uint80 mid = low + (high - low) / 2;
-            (,,, uint256 timestamp,) = AggregatorV2V3Interface(dataFeedStore).getRoundData(mid);
+            (,,, uint256 timestamp,) = AggregatorV2V3Interface(dataFeedStorePrecipitation).getRoundData(mid);
 
             if (timestamp < startDate) {
                 low = mid + 1;
@@ -167,10 +162,10 @@ contract AgriShield {
     function getSnowfallData(uint256 startDate, uint256 endDate) internal view returns (uint256 totalSnowfall) {
         // Example implementation: Replace with actual oracle data fetching logic
         // This could involve looping through each day in the range and summing the snowfall
-        uint80 latestRound = getLatestRound();
+        uint80 latestRound = getLatestRound(dataFeedStoreSnowfall);
         for (uint80 roundId = latestRound; roundId > 0; roundId--) {
             (uint80 id, int256 answer,, uint256 timestamp,) =
-                AggregatorV2V3Interface(dataFeedStore).getRoundData(roundId);
+                AggregatorV2V3Interface(dataFeedStoreSnowfall).getRoundData(roundId);
             if (timestamp < startDate) {
                 break;
             }
@@ -182,8 +177,8 @@ contract AgriShield {
      * @dev Retrieves the latest round ID from the oracle.
      * @return latestRound The latest round ID.
      */
-    function getLatestRound() internal view returns (uint80 latestRound) {
-        latestRound = uint80(AggregatorV2V3Interface(dataFeedStore).latestRound());
+    function getLatestRound(address _dataStore) internal view returns (uint80 latestRound) {
+        latestRound = uint80(AggregatorV2V3Interface(_dataStore).latestRound());
     }
 
     function receive() external payable {

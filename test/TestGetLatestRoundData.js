@@ -30,7 +30,7 @@ describe("Test", function () {
       // 0x5Af511e3BE3E4A672A7a8CB20271a741CF12CE68 // Chainlink proxy BTC/USD - used for precipitation
       // TODO will be used for snowfall
       // 0xF20807e060e5790f75567311313FDdfCe2d898dc // Chainlink proxy ETH/USD
-      const agriShieldContract = await AgriShield.deploy("0x5Af511e3BE3E4A672A7a8CB20271a741CF12CE68");
+      const agriShieldContract = await AgriShield.deploy("0x5Af511e3BE3E4A672A7a8CB20271a741CF12CE68", "0xF20807e060e5790f75567311313FDdfCe2d898dc");
       await agriShieldContract.mint(1726602202, 1728330202, 1, { value: ethers.parseEther("0.2") });
 
       const nftFactory = await ethers.getContractFactory("AgriShieldNFT");

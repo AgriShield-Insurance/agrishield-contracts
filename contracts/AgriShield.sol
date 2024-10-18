@@ -6,7 +6,7 @@ import "hardhat/console.sol";
 import "./AgriShieldNFT.sol";
 import "./InsuranceEnums.sol";
 import "./InsuranceStructs.sol";
-import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV2V3Interface.sol";
 
 contract AgriShield {
     address dataFeedStore;
@@ -18,6 +18,7 @@ contract AgriShield {
     }
 
     function mint(uint256 startDate, uint256 endDate, InsuranceEnums.InsuranceType insuranceType) external payable {
+        require(insuranceType != InsuranceEnums.InsuranceType.NONE, "insurance type should not be 0");
         require(endDate > startDate, "endDate should be after startDate");
         uint256 requiredPayment = getRequiredPayment(startDate, endDate);
         require(msg.value >= requiredPayment, "Insufficient ETH sent for the specified duration");
@@ -33,46 +34,43 @@ contract AgriShield {
 
     function claim(uint256 tokenId) external {
         require(nft.ownerOf(tokenId) == msg.sender, "not the owner of this token");
-        
-        // Retrieve the insurance policy associated with the tokenId
-        InsuranceStructs.InsurancePolicy memory policy = nft.insurancePolicies(tokenId);
-        
-        require(
-            policy.insuranceType != InsuranceEnums.InsuranceType.NONE, "no insurance policy for this token"
-        );
-        require(policy.endDate > block.timestamp, "endDate has not passed");
 
-        // Ensure the current time is within the policy period
-        require(block.timestamp >= policy.startDate, "Policy has not started yet");
-        require(block.timestamp <= policy.endDate, "Policy has expired");
-        
+        // Retrieve the insurance policy associated with the tokenId
+        InsuranceStructs.InsurancePolicy memory policy = nft.getInsurancePolicy(tokenId);
+
+        require(policy.insuranceType != InsuranceEnums.InsuranceType.NONE, "no insurance policy for this token");
+        require(policy.endDate < block.timestamp, "endDate has not passed");
+
         bool shouldBePaidOut = false;
         uint256 totalPrecipitation = 0;
         uint256 totalSnowfall = 0;
-        
+
         // Determine which type of insurance to evaluate
         if (policy.insuranceType == InsuranceEnums.InsuranceType.DROUGHT) {
             // Fetch precipitation data from the oracle
             totalPrecipitation = getPrecipitationData(policy.startDate, policy.endDate);
-            
+
             // Check if precipitation is below a certain threshold for drought
-            if (totalPrecipitation < policy.precipitation) { // Example threshold
+            if (totalPrecipitation < policy.precipitation) {
+                // Example threshold
                 shouldBePaidOut = true;
             }
         } else if (policy.insuranceType == InsuranceEnums.InsuranceType.RAINY) {
             // Fetch precipitation data from the oracle
             totalPrecipitation = getPrecipitationData(policy.startDate, policy.endDate);
-            
+
             // Check if precipitation is above a certain threshold for rainfall
-            if (totalPrecipitation > policy.precipitation) { // Example threshold
+            if (totalPrecipitation > policy.precipitation) {
+                // Example threshold
                 shouldBePaidOut = true;
             }
         } else if (policy.insuranceType == InsuranceEnums.InsuranceType.SNOWFALL) {
             // Fetch snowfall data from the oracle
             totalSnowfall = getSnowfallData(policy.startDate, policy.endDate);
-            
+
             // Check if snowfall is above a certain threshold for snowfall
-            if (totalSnowfall > policy.snowfall) { // Example threshold
+            if (totalSnowfall > policy.snowfall) {
+                // Example threshold
                 shouldBePaidOut = true;
             }
         }
@@ -80,10 +78,11 @@ contract AgriShield {
         if (shouldBePaidOut) {
             // Calculate the payout amount (e.g., 100 times the required payment)
             uint256 payoutAmount = getRequiredPayment(policy.startDate, policy.endDate) * 100;
+            console.log("Balance: ", address(this).balance);
             require(address(this).balance >= payoutAmount, "Insufficient contract balance for payout");
-            
+
             // Transfer the payout to the claimer
-            (bool success, ) = msg.sender.call{value: payoutAmount}("");
+            (bool success,) = msg.sender.call{value: payoutAmount}("");
             require(success, "Failed to transfer ETH to claimer");
         }
 
@@ -110,23 +109,27 @@ contract AgriShield {
      * @param endDate The end date of the policy period.
      * @return totalPrecipitation The total precipitation over the period.
      */
-    function getPrecipitationData(uint256 startDate, uint256 endDate) internal view returns (uint256 totalPrecipitation) {
+    function getPrecipitationData(uint256 startDate, uint256 endDate)
+        internal
+        view
+        returns (uint256 totalPrecipitation)
+    {
         uint80 latestRound = getLatestRound();
         uint80 firstRelevantRound = findFirstRound(startDate, latestRound);
-        
+
         for (uint80 roundId = firstRelevantRound; roundId > 0; roundId--) {
-            (, int256 answer, , uint256 timestamp, ) = AggregatorV3Interface(dataFeedStore).getRoundData(roundId);
-            
+            (, int256 answer,, uint256 timestamp,) = AggregatorV2V3Interface(dataFeedStore).getRoundData(roundId);
+
             if (timestamp > endDate) {
                 // Skip rounds after the endDate
                 continue;
             }
-            
+
             if (timestamp < startDate) {
                 // No more relevant data
                 break;
             }
-            
+
             totalPrecipitation += uint256(answer);
         }
     }
@@ -144,8 +147,8 @@ contract AgriShield {
 
         while (low <= high) {
             uint80 mid = low + (high - low) / 2;
-            (, , , uint256 timestamp, ) = AggregatorV3Interface(dataFeedStore).getRoundData(mid);
-            
+            (,,, uint256 timestamp,) = AggregatorV2V3Interface(dataFeedStore).getRoundData(mid);
+
             if (timestamp < startDate) {
                 low = mid + 1;
             } else {
@@ -166,7 +169,8 @@ contract AgriShield {
         // This could involve looping through each day in the range and summing the snowfall
         uint80 latestRound = getLatestRound();
         for (uint80 roundId = latestRound; roundId > 0; roundId--) {
-            (uint80 id, int256 answer, , uint256 timestamp, ) = AggregatorV3Interface(dataFeedStore).getRoundData(roundId);
+            (uint80 id, int256 answer,, uint256 timestamp,) =
+                AggregatorV2V3Interface(dataFeedStore).getRoundData(roundId);
             if (timestamp < startDate) {
                 break;
             }
@@ -179,6 +183,10 @@ contract AgriShield {
      * @return latestRound The latest round ID.
      */
     function getLatestRound() internal view returns (uint80 latestRound) {
-        latestRound = AggregatorV3Interface(dataFeedStore).latestRound();
+        latestRound = uint80(AggregatorV2V3Interface(dataFeedStore).latestRound());
+    }
+
+    function receive() external payable {
+        console.log("called receive");
     }
 }

@@ -30,6 +30,10 @@ contract AgriShieldNFT is Ownable, ERC721 {
         _safeMint(receiver, newTokenId);
     }
 
+    function getInsurancePolicy(uint256 _tokenId) external view returns (InsuranceStructs.InsurancePolicy memory) {
+        return insurancePolicies[_tokenId];
+    }
+
     function burn(uint256 _tokenId) external onlyOwner {
         _burn(_tokenId);
     }
